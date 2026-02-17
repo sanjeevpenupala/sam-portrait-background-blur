@@ -1,0 +1,15 @@
+[project]
+name = "sam-3-human-segmentation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "huggingface-hub>=1.4.1",
+    "opencv-python-headless>=4.13.0.92",
+    "pillow>=12.1.1",
+    "streamlit>=1.54.0",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "ultralytics>=8.4.14",
+]
