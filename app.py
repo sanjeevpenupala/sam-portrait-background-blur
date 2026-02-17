@@ -23,3 +23,18 @@ with st.spinner("Loading SAM3 model..."):
     predictor = load_model()
 
 st.success("Model loaded.")
+
+uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    from PIL import Image
+
+    image = Image.open(uploaded_file)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Original")
+        st.image(image, use_container_width=True)
+    with col2:
+        st.subheader("Segmentation")
+        st.info("Segmentation will appear here.")
