@@ -1,6 +1,6 @@
-# Portrait Background Blur — Model Comparison
+# Portrait Blur Arena
 
-A Streamlit app comparing 7 segmentation models for portrait background blur. Select which models to run, upload a photo, and compare mask quality and blur results side-by-side.
+Side-by-side comparison of segmentation models for portrait background blur. Select which models to run, upload a photo, and compare mask quality and blur results.
 
 ## Supported Models
 
@@ -36,8 +36,8 @@ A Streamlit app comparing 7 segmentation models for portrait background blur. Se
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/sanjeevpenupala/sam-portrait-background-blur.git
-   cd sam-portrait-background-blur
+   git clone https://github.com/sanjeevpenupala/portrait-blur-arena.git
+   cd portrait-blur-arena
    ```
 
 2. **Install dependencies**
@@ -92,7 +92,7 @@ Detected masks are thresholded to binary (>0.5), cleaned with morphological clos
 ## Project Structure
 
 ```
-portrait-background-blur/
+portrait-blur-arena/
 ├── app.py              # Streamlit app (models, segmentation, blur, UI)
 ├── pyproject.toml      # Project metadata and dependencies
 ├── uv.lock             # Locked dependency versions

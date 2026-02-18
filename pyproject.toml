@@ -1,5 +1,5 @@
 [project]
-name = "sam-portrait-background-blur"
+name = "portrait-blur-arena"
 version = "0.1.0"
 description = "Portrait background blur comparing BiRefNet and SAM3 segmentation models"
 readme = "README.md"
