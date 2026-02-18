@@ -4,15 +4,15 @@ A Streamlit app comparing 7 segmentation models for portrait background blur. Se
 
 ## Supported Models
 
-| Model | Type | Architecture | Mask Output |
-|-------|------|-------------|-------------|
-| [SAM3](https://huggingface.co/1038lab/sam3) | Text-prompted segmentation | SAM3 (Ultralytics) | Binary mask |
-| [BiRefNet Portrait](https://huggingface.co/ZhengPeng7/BiRefNet-portrait) | Portrait segmentation | BiRefNet | Alpha matte |
-| [BiRefNet HR Matting](https://huggingface.co/ZhengPeng7/BiRefNet_HR-matting) | High-res matting | BiRefNet | Alpha matte |
-| [BiRefNet Dynamic](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic) | Dynamic-res segmentation | BiRefNet | Alpha matte |
-| [BiRefNet Dyn Matting](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic-matting) | Dynamic-res matting | BiRefNet | Alpha matte |
-| [RMBG 2.0](https://huggingface.co/briaai/RMBG-2.0) | Background removal | BiRefNet (Bria-trained) | Alpha matte |
-| [BEN2](https://huggingface.co/PramaLLC/BEN2) | Background eraser | BEN2 | Alpha matte |
+| Model | Type | Training Data | Mask Output |
+|-------|------|--------------|-------------|
+| [SAM3](https://huggingface.co/1038lab/sam3) | Text-prompted segmentation | Semantic segmentation | Binary mask |
+| [BiRefNet Portrait](https://huggingface.co/ZhengPeng7/BiRefNet-portrait) | Portrait segmentation | Matting (P3M-10k, TR-humans) | Soft mask |
+| [BiRefNet HR Matting](https://huggingface.co/ZhengPeng7/BiRefNet_HR-matting) | High-res matting | Matting (AM-2K, P3M) | Alpha matte |
+| [BiRefNet Dynamic](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic) | Dynamic-res segmentation | Segmentation (DIS-TR) | Near-binary mask |
+| [BiRefNet Dyn Matting](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic-matting) | Dynamic-res matting | Matting (AM-2K, P3M) | Alpha matte |
+| [RMBG 2.0](https://huggingface.co/briaai/RMBG-2.0) | Background removal | Proprietary (15K+ images) | Alpha matte |
+| [BEN2](https://huggingface.co/PramaLLC/BEN2) | Background eraser | Segmentation (DIS5K + 22K proprietary) | Near-binary mask |
 
 ## Features
 
@@ -60,12 +60,14 @@ A Streamlit app comparing 7 segmentation models for portrait background blur. Se
 
 ### Segmentation
 
-Each model produces either a binary mask (SAM3) or a continuous alpha matte (all others). The mask is used for both the overlay visualization and background blur compositing.
+Models produce different mask types depending on their training data — not all sigmoid outputs are alpha mattes. Models trained on matting datasets (with continuous alpha ground truth) produce true alpha mattes with soft transitions for hair, glass, and semi-transparent regions. Models trained on segmentation datasets (with binary 0/1 labels) produce near-binary masks where values cluster at 0 and 1, with soft transitions only at object boundaries due to the sigmoid activation.
 
-- **BiRefNet variants** — Bilateral reference networks. The "dynamic" variants accept arbitrary input resolutions (trained across 256-2304px). Non-dynamic variants resize to a fixed 1024x1024. Dynamic inputs are padded to the nearest multiple of 64 to satisfy the model's patch grid requirements.
+- **BiRefNet matting variants** (Portrait, HR Matting, Dyn Matting) — Trained on matting datasets (P3M-10k, AM-2K). Produce continuous alpha values. HR Matting runs at 2048x2048 fixed resolution. Portrait is trained on P3M-10k portrait matting data.
+- **BiRefNet Dynamic** — Trained on DIS-TR (binary segmentation data). Produces near-binary masks despite the sigmoid output. Accepts arbitrary input resolutions (256-2304px); inputs are padded to the nearest multiple of 64.
+- **Non-dynamic BiRefNet variants** — Resize input to a fixed 1024x1024.
 - **SAM3** — Text-prompted semantic segmentation with `["person"]`. Multiple detected masks are merged into a single binary mask.
-- **RMBG 2.0** — Bria's background removal model, built on BiRefNet with proprietary training data. Uses the same inference pipeline as BiRefNet.
-- **BEN2** — Background eraser network. Returns an RGBA image; the alpha channel is extracted as the matte.
+- **RMBG 2.0** — Bria's background removal model, built on BiRefNet with proprietary training data (15K+ manually labeled images). Produces a true 8-bit alpha matte. Uses the same inference pipeline as BiRefNet.
+- **BEN2** — Background eraser network trained on DIS5K (binary segmentation). Returns an RGBA image; the alpha channel is extracted as the mask. The "Confidence Guided Matting" (CGM) refiner improves edge quality but does not produce a true alpha matte since the model was never trained on continuous alpha ground truth.
 
 ### Background Blur: Inpaint-Then-Blur
 
@@ -75,7 +77,7 @@ A naive approach (blur the original image, then composite) smears subject pixels
 2. **Multi-pass Gaussian blur** — The inpainted image is blurred 3x with the user-selected kernel size. Because the subject is already removed, there's no color bleeding at edges.
 3. **Alpha composite** — `result = original * alpha + blurred * (1 - alpha)`. The sharp original subject is placed on top of the clean blurred background.
 
-For binary masks (SAM3), the mask is Gaussian-blurred to create feathered edges before compositing. For alpha mattes (BiRefNet, RMBG, BEN2), the model's continuous values handle blending natively.
+For binary and near-binary masks (SAM3, BiRefNet Dynamic, BEN2), the mask is Gaussian-blurred to create feathered edges before compositing. For true alpha mattes (BiRefNet Portrait, HR Matting, Dyn Matting, RMBG 2.0), the model's continuous values handle blending natively.
 
 ### Mask Overlay
 
@@ -118,7 +120,7 @@ portrait-background-blur/
 - Clear partial cache: `rm -rf ~/.cache/huggingface/hub/models--<org>--<model>/`
 
 **"No humans detected"**
-- BiRefNet variants use a 0.1 alpha threshold to detect presence. SAM3 uses a confidence threshold of 0.25.
+- BiRefNet variants and BEN2 use a 0.1 alpha threshold to detect presence. SAM3 uses a confidence threshold of 0.25.
 - Try a different image with more clearly visible people.
 
 **BiRefNet Dynamic error on certain image sizes**

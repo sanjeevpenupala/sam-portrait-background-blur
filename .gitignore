@@ -176,4 +176,7 @@ pyrightconfig.json
 # Models
 *.pt
 
+# Local docs/plans
+docs/plans/
+
 # End of https://www.toptal.com/developers/gitignore/api/python

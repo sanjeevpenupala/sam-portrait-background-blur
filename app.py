@@ -361,7 +361,7 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_dynamic", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet_dynamic",
-        "soft_mask": True,
+        "soft_mask": False,
     },
     {
         "key": "birefnet_dynamic_matting",
@@ -388,7 +388,7 @@ MODEL_REGISTRY = [
         "loader_kwargs": {},
         "runner": "ben2",
         "transform": None,
-        "soft_mask": True,
+        "soft_mask": False,
     },
 ]
 
