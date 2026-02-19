@@ -431,78 +431,229 @@ if not active_specs:
     st.warning("Select at least one model from the sidebar.")
     st.stop()
 
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader(
+    "Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+)
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
-    original = np.array(image)
+if not uploaded_files:
+    st.stop()
 
-    st.image(image, caption="Original", width=400)
+named_files = deduplicate_names(uploaded_files)
+images = {}
+for name, f in named_files.items():
+    pil = Image.open(f).convert("RGB")
+    images[name] = {"pil": pil, "np": np.array(pil)}
 
-    if not st.button("Run Segmentation and Blurring", type="primary"):
+# Thumbnail preview
+thumb_cols = st.columns(min(len(images), 6))
+for i, (name, img_data) in enumerate(images.items()):
+    with thumb_cols[i % 6]:
+        st.image(img_data["pil"], caption=name, width=150)
+
+if not st.button("Run Segmentation and Blurring", type="primary"):
+    if st.session_state.get("ran"):
+        pass  # fall through to render stored results
+    else:
         st.stop()
-
-    models = {}
+else:
+    # "Run" button was clicked — do batch processing
     results = {}
+    models = {}
+    total_steps = len(active_specs) * len(images)
+    step = 0
+    progress = st.progress(0, text="Starting...")
+
     for spec in active_specs:
         try:
-            with st.spinner(f"Loading {spec['label']}..."):
-                models[spec["key"]] = spec["loader"](device_name, **spec["loader_kwargs"])
-            with st.spinner(f"Running {spec['label']}..."):
-                overlay, mask, elapsed = run_inference(spec, models[spec["key"]], image, device)
-                results[spec["key"]] = {"overlay": overlay, "mask": mask, "time": elapsed}
+            progress.progress(
+                step / total_steps,
+                text=f"Loading {spec['label']}..."
+            )
+            models[spec["key"]] = spec["loader"](device_name, **spec["loader_kwargs"])
         except Exception as e:
-            st.error(f"Failed to run {spec['label']}: {e}")
-            results[spec["key"]] = {"overlay": None, "mask": None, "time": 0.0}
+            st.error(f"Failed to load {spec['label']}: {e}")
+            for name in images:
+                results.setdefault(name, {})[spec["key"]] = {
+                    "overlay": None, "mask": None, "time": 0.0
+                }
+            step += len(images)
+            continue
 
-    st.divider()
+        for name, img_data in images.items():
+            step += 1
+            progress.progress(
+                step / total_steps,
+                text=f"Running {spec['label']} on {name}... ({step}/{total_steps})"
+            )
+            try:
+                overlay, mask, elapsed = run_inference(
+                    spec, models[spec["key"]], img_data["pil"], device
+                )
+                # Store mask as uint8 to halve memory
+                if mask is not None and mask.dtype != np.uint8:
+                    mask = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+                results.setdefault(name, {})[spec["key"]] = {
+                    "overlay": overlay, "mask": mask, "time": elapsed
+                }
+            except Exception as e:
+                st.error(f"Failed to run {spec['label']} on {name}: {e}")
+                results.setdefault(name, {})[spec["key"]] = {
+                    "overlay": None, "mask": None, "time": 0.0
+                }
 
-    cols = st.columns(len(active_specs))
-    for col, spec in zip(cols, active_specs):
-        r = results[spec["key"]]
+    progress.progress(1.0, text="Rendering results...")
+
+    st.session_state["results"] = results
+    st.session_state["images"] = images
+    st.session_state["active_specs"] = active_specs
+    st.session_state["ran"] = True
+
+# --- Render results from session state ---
+if not st.session_state.get("ran"):
+    st.stop()
+
+results = st.session_state["results"]
+stored_images = st.session_state["images"]
+stored_specs = st.session_state["active_specs"]
+
+st.divider()
+
+blur_strength = st.slider(
+    "Blur Strength", min_value=5, max_value=255, value=101, step=2
+)
+
+
+# ZIP download button (placed right after run button, before tabs)
+def build_zip(blur_val):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for img_name, model_results in results.items():
+            original = stored_images[img_name]["np"]
+            for spec in stored_specs:
+                r = model_results.get(spec["key"], {})
+                if r.get("overlay") is not None:
+                    # Save mask overlay
+                    overlay_buf = io.BytesIO()
+                    r["overlay"].save(overlay_buf, format="PNG")
+                    zf.writestr(
+                        f"results/{img_name}/masks/{spec['key']}.png",
+                        overlay_buf.getvalue(),
+                    )
+                if r.get("mask") is not None:
+                    # Save blurred image
+                    blurred = blur_background(
+                        original, r["mask"], blur_val, soft_mask=spec["soft_mask"]
+                    )
+                    blurred_buf = io.BytesIO()
+                    Image.fromarray(blurred).save(blurred_buf, format="PNG")
+                    zf.writestr(
+                        f"results/{img_name}/blurred/{spec['key']}.png",
+                        blurred_buf.getvalue(),
+                    )
+    buf.seek(0)
+    return buf.getvalue()
+
+
+st.markdown(
+    """<style>
+    div[data-testid="stDownloadButton"] button {
+        background-color: #2ea043 !important;
+        color: white !important;
+        border: none !important;
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        background-color: #278f3a !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
+st.download_button(
+    label="Download All Results (ZIP)",
+    data=build_zip(blur_strength),
+    file_name="portrait_blur_results.zip",
+    mime="application/zip",
+    key="download_zip",
+)
+
+image_names = list(stored_images.keys())
+if len(image_names) == 1:
+    # Single image — no tabs, just render directly
+    name = image_names[0]
+    original = stored_images[name]["np"]
+    model_results = results[name]
+
+    cols = st.columns(len(stored_specs))
+    for col, spec in zip(cols, stored_specs):
+        r = model_results.get(spec["key"], {})
         with col:
             st.subheader(spec["label"])
-            st.caption(f"Inference: {r['time']:.2f}s")
-            if r["overlay"] is not None:
-                st.image(r["overlay"], caption="Mask Overlay", width="stretch")
+            st.caption(f"Inference: {r.get('time', 0):.2f}s")
+            if r.get("overlay") is not None:
+                st.image(r["overlay"], caption="Mask Overlay", use_container_width=True)
             else:
                 st.warning("No humans detected.")
 
-    any_mask = any(results[s["key"]]["mask"] is not None for s in active_specs)
+    any_mask = any(
+        model_results.get(s["key"], {}).get("mask") is not None for s in stored_specs
+    )
     if any_mask:
         st.divider()
-        blur_strength = st.slider(
-            "Blur Strength", min_value=5, max_value=255, value=101, step=2
-        )
-        st.write("")
-
-        blur_cols = st.columns(len(active_specs))
-        for col, spec in zip(blur_cols, active_specs):
-            r = results[spec["key"]]
+        blur_cols = st.columns(len(stored_specs))
+        for col, spec in zip(blur_cols, stored_specs):
+            r = model_results.get(spec["key"], {})
             with col:
-                if r["mask"] is not None:
+                if r.get("mask") is not None:
                     blurred = blur_background(
                         original, r["mask"], blur_strength, soft_mask=spec["soft_mask"]
                     )
-                    st.image(blurred, caption=f"{spec['label']} — Background Blur", width="stretch")
+                    st.image(
+                        blurred,
+                        caption=f"{spec['label']} — Background Blur",
+                        use_container_width=True,
+                    )
+else:
+    # Multiple images — tabbed layout
+    tabs = st.tabs(image_names)
+    for tab, name in zip(tabs, image_names):
+        with tab:
+            original = stored_images[name]["np"]
+            model_results = results[name]
 
-        # st.divider()
-        # st.subheader("Cut / Paste Comparison")
-        # st.caption(
-        #     "**Above:** Alpha blending — mask values smoothly blend sharp foreground with blurred background. "
-        #     "For SAM3 (binary mask), we Gaussian-blur the mask first to fake soft edges. "
-        #     "For matting models (alpha matte), the model's continuous [0–1] values handle blending natively."
-        # )
-        # st.caption(
-        #     "**Below:** Naive cut/paste — threshold all masks to hard binary (person=1, background=0), "
-        #     "blur the full image, stamp the person on top. No edge blending at all. "
-        #     "Identical to alpha blend for perfect masks, but exposes harsh edges on binary masks like SAM3."
-        # )
-        #
-        # cp_cols = st.columns(len(active_specs))
-        # for col, spec in zip(cp_cols, active_specs):
-        #     r = results[spec["key"]]
-        #     with col:
-        #         if r["mask"] is not None:
-        #             cp = cut_paste_blur(original, r["mask"], blur_strength)
-        #             st.image(cp, caption=f"{spec['label']} — Cut/Paste", width="stretch")
+            cols = st.columns(len(stored_specs))
+            for col, spec in zip(cols, stored_specs):
+                r = model_results.get(spec["key"], {})
+                with col:
+                    st.subheader(spec["label"])
+                    st.caption(f"Inference: {r.get('time', 0):.2f}s")
+                    if r.get("overlay") is not None:
+                        st.image(
+                            r["overlay"],
+                            caption="Mask Overlay",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.warning("No humans detected.")
+
+            any_mask = any(
+                model_results.get(s["key"], {}).get("mask") is not None
+                for s in stored_specs
+            )
+            if any_mask:
+                st.divider()
+                blur_cols = st.columns(len(stored_specs))
+                for col, spec in zip(blur_cols, stored_specs):
+                    r = model_results.get(spec["key"], {})
+                    with col:
+                        if r.get("mask") is not None:
+                            blurred = blur_background(
+                                original,
+                                r["mask"],
+                                blur_strength,
+                                soft_mask=spec["soft_mask"],
+                            )
+                            st.image(
+                                blurred,
+                                caption=f"{spec['label']} — Background Blur",
+                                use_container_width=True,
+                            )
