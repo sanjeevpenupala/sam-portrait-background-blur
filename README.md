@@ -77,7 +77,7 @@ A naive approach (blur the original image, then composite) smears subject pixels
 2. **Multi-pass Gaussian blur** — The inpainted image is blurred 3x with the user-selected kernel size. Because the subject is already removed, there's no color bleeding at edges.
 3. **Alpha composite** — `result = original * alpha + blurred * (1 - alpha)`. The sharp original subject is placed on top of the clean blurred background.
 
-For binary and near-binary masks (SAM3, BiRefNet Dynamic, BEN2), the mask is Gaussian-blurred to create feathered edges before compositing. For true alpha mattes (BiRefNet Portrait, HR Matting, Dyn Matting, RMBG 2.0), the model's continuous values handle blending natively.
+For SAM3's binary masks, the mask is Gaussian-blurred to create feathered edges before compositing. BiRefNet Dynamic and BEN2 produce near-binary masks but their sigmoid/CGM outputs provide enough natural edge transition for clean compositing without additional feathering. For true alpha mattes (BiRefNet Portrait, HR Matting, Dyn Matting, RMBG 2.0), the model's continuous values handle blending natively.
 
 ### Mask Overlay
 

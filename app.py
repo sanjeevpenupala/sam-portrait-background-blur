@@ -356,7 +356,7 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_dynamic", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet_dynamic",
-        "soft_mask": False,
+        "soft_mask": True,
     },
     {
         "key": "birefnet_dynamic_matting",
@@ -383,7 +383,7 @@ MODEL_REGISTRY = [
         "loader_kwargs": {},
         "runner": "ben2",
         "transform": None,
-        "soft_mask": False,
+        "soft_mask": True,
     },
 ]
 
@@ -586,7 +586,7 @@ if len(image_names) == 1:
             st.subheader(spec["label"])
             st.caption(f"Inference: {r.get('time', 0):.2f}s")
             if r.get("overlay") is not None:
-                st.image(r["overlay"], caption="Mask Overlay", use_container_width=True)
+                st.image(r["overlay"], caption="Mask Overlay", width="stretch")
             else:
                 st.warning("No humans detected.")
 
@@ -606,7 +606,7 @@ if len(image_names) == 1:
                     st.image(
                         blurred,
                         caption=f"{spec['label']} — Background Blur",
-                        use_container_width=True,
+                        width="stretch",
                     )
 else:
     # Multiple images — tabbed layout
@@ -626,7 +626,7 @@ else:
                         st.image(
                             r["overlay"],
                             caption="Mask Overlay",
-                            use_container_width=True,
+                            width="stretch",
                         )
                     else:
                         st.warning("No humans detected.")
@@ -651,5 +651,5 @@ else:
                             st.image(
                                 blurred,
                                 caption=f"{spec['label']} — Background Blur",
-                                use_container_width=True,
+                                width="stretch",
                             )
