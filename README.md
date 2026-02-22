@@ -4,15 +4,15 @@ Side-by-side comparison of segmentation models for portrait background blur. Sel
 
 ## Supported Models
 
-| Model | Type | Training Data | Mask Output |
-|-------|------|--------------|-------------|
-| [SAM3](https://huggingface.co/1038lab/sam3) | Text-prompted segmentation | Semantic segmentation | Binary mask |
-| [BiRefNet Portrait](https://huggingface.co/ZhengPeng7/BiRefNet-portrait) | Portrait segmentation | Matting (P3M-10k, TR-humans) | Soft mask |
-| [BiRefNet HR Matting](https://huggingface.co/ZhengPeng7/BiRefNet_HR-matting) | High-res matting | Matting (AM-2K, P3M) | Alpha matte |
-| [BiRefNet Dynamic](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic) | Dynamic-res segmentation | Segmentation (DIS-TR) | Near-binary mask |
-| [BiRefNet Dyn Matting](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic-matting) | Dynamic-res matting | Matting (AM-2K, P3M) | Alpha matte |
-| [RMBG 2.0](https://huggingface.co/briaai/RMBG-2.0) | Background removal | Proprietary (15K+ images) | Alpha matte |
-| [BEN2](https://huggingface.co/PramaLLC/BEN2) | Background eraser | Segmentation (DIS5K + 22K proprietary) | Near-binary mask |
+| Model                                                                              | Type                       | Training Data                          | Mask Output      |
+| ---------------------------------------------------------------------------------- | -------------------------- | -------------------------------------- | ---------------- |
+| [SAM3](https://huggingface.co/1038lab/sam3)                                        | Text-prompted segmentation | Semantic segmentation                  | Binary mask      |
+| [BiRefNet Portrait](https://huggingface.co/ZhengPeng7/BiRefNet-portrait)           | Portrait segmentation      | Matting (P3M-10k, TR-humans)           | Soft mask        |
+| [BiRefNet HR Matting](https://huggingface.co/ZhengPeng7/BiRefNet_HR-matting)       | High-res matting           | Matting (AM-2K, P3M)                   | Alpha matte      |
+| [BiRefNet Dynamic](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic)             | Dynamic-res segmentation   | Segmentation (DIS-TR)                  | Near-binary mask |
+| [BiRefNet Dyn Matting](https://huggingface.co/ZhengPeng7/BiRefNet_dynamic-matting) | Dynamic-res matting        | Matting (AM-2K, P3M)                   | Alpha matte      |
+| [RMBG 2.0](https://huggingface.co/briaai/RMBG-2.0)                                 | Background removal         | Proprietary (15K+ images)              | Alpha matte      |
+| [BEN2](https://huggingface.co/PramaLLC/BEN2)                                       | Background eraser          | Segmentation (DIS5K + 22K proprietary) | Near-binary mask |
 
 ## Features
 
@@ -101,31 +101,35 @@ portrait-blur-arena/
 
 ## Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `streamlit` | Web UI framework |
-| `transformers` | BiRefNet / RMBG model loading and inference |
-| `ultralytics` | SAM3 model interface |
-| `ben2` | BEN2 model interface |
+| Package                  | Purpose                                            |
+| ------------------------ | -------------------------------------------------- |
+| `streamlit`              | Web UI framework                                   |
+| `transformers`           | BiRefNet / RMBG model loading and inference        |
+| `ultralytics`            | SAM3 model interface                               |
+| `ben2`                   | BEN2 model interface                               |
 | `opencv-python-headless` | Mask processing, inpainting, contour drawing, blur |
-| `Pillow` | Image I/O |
-| `huggingface-hub` | Auto-download model weights |
-| `torch` / `torchvision` | Model backend and image transforms |
-| `einops` / `kornia` | Required by BiRefNet (`trust_remote_code=True`) |
+| `Pillow`                 | Image I/O                                          |
+| `huggingface-hub`        | Auto-download model weights                        |
+| `torch` / `torchvision`  | Model backend and image transforms                 |
+| `einops` / `kornia`      | Required by BiRefNet (`trust_remote_code=True`)    |
 
 ## Troubleshooting
 
 **"Failed to run [model]"**
+
 - Check your internet connection (models download on first use).
 - Clear partial cache: `rm -rf ~/.cache/huggingface/hub/models--<org>--<model>/`
 
 **"No humans detected"**
+
 - BiRefNet variants and BEN2 use a 0.1 alpha threshold to detect presence. SAM3 uses a confidence threshold of 0.25.
 - Try a different image with more clearly visible people.
 
 **BiRefNet Dynamic error on certain image sizes**
+
 - The dynamic variants require input dimensions compatible with their internal patch grid. The app automatically pads to the nearest multiple of 64, but extremely unusual aspect ratios may still cause issues.
 
 **Slow inference**
+
 - Expected on CPU. Use a CUDA GPU for faster results.
 - Dynamic BiRefNet variants process at full input resolution — larger images take longer.
