@@ -575,7 +575,7 @@ if len(image_names) == 1:
                     st.image(
                         display,
                         caption=f"{spec['label']} — Background Removed",
-                        use_container_width=True,
+                        width="stretch",
                     )
 else:
     # Multiple images — tabbed layout
@@ -616,5 +616,5 @@ else:
                             st.image(
                                 display,
                                 caption=f"{spec['label']} — Background Removed",
-                                use_container_width=True,
+                                width="stretch",
                             )
