@@ -66,8 +66,22 @@ def render_segmentation_overlay(original: np.ndarray, merged: np.ndarray) -> np.
 
     dilated = cv2.dilate(closed, kernel, iterations=1)
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(overlay, contours, -1, color, 2)
+    cv2.drawContours(overlay, contours, -1, color, 4)
 
+    return overlay
+
+
+def render_segmentation_outline_only(original: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Draw only contours on the image from a mask (no green fill)."""
+    overlay = original.copy()
+    binary = (mask > 0).astype(np.uint8) if (mask.dtype != np.uint8 or mask.max() > 1) else mask.astype(np.uint8)
+    if binary.max() == 0:
+        return overlay
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    color = (0, 255, 0, 255) if overlay.ndim == 3 and overlay.shape[2] == 4 else (0, 255, 0)
+    cv2.drawContours(overlay, contours, -1, color, 4)
     return overlay
 
 
@@ -384,6 +398,13 @@ device = resolve_device(device_choice)
 device_name = str(device)
 st.sidebar.caption(f"Active: **{device_name}**")
 
+mask_display_mode = st.sidebar.radio(
+    "Mask display",
+    ["Mask + outline", "Outline only"],
+    index=0,
+    key="mask_display_mode",
+)
+
 st.sidebar.markdown("**Models to compare**")
 active_specs = [
     spec for spec in MODEL_REGISTRY
@@ -556,7 +577,11 @@ if len(image_names) == 1:
             st.subheader(spec["label"])
             st.caption(f"Inference: {r.get('time', 0):.2f}s")
             if r.get("overlay") is not None:
-                st.image(r["overlay"], caption="Mask Overlay", width="stretch")
+                if mask_display_mode == "Outline only" and r.get("mask") is not None:
+                    outline_img = render_segmentation_outline_only(original, r["mask"])
+                    st.image(Image.fromarray(outline_img), caption="Mask Overlay", width="stretch")
+                else:
+                    st.image(r["overlay"], caption="Mask Overlay", width="stretch")
             else:
                 st.warning("No humans detected.")
 
@@ -592,11 +617,19 @@ else:
                     st.subheader(spec["label"])
                     st.caption(f"Inference: {r.get('time', 0):.2f}s")
                     if r.get("overlay") is not None:
-                        st.image(
-                            r["overlay"],
-                            caption="Mask Overlay",
-                            width="stretch",
-                        )
+                        if mask_display_mode == "Outline only" and r.get("mask") is not None:
+                            outline_img = render_segmentation_outline_only(original, r["mask"])
+                            st.image(
+                                Image.fromarray(outline_img),
+                                caption="Mask Overlay",
+                                width="stretch",
+                            )
+                        else:
+                            st.image(
+                                r["overlay"],
+                                caption="Mask Overlay",
+                                width="stretch",
+                            )
                     else:
                         st.warning("No humans detected.")
 
