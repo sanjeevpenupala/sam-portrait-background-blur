@@ -15,6 +15,7 @@ from PIL import Image
 from torchvision import transforms
 from transformers import AutoConfig, AutoModelForImageSegmentation
 from ultralytics.models.sam import SAM3SemanticPredictor
+from withoutbg import WithoutBG
 
 
 def get_available_devices():
@@ -184,8 +185,20 @@ def load_ben2(device_name: str):
     return model
 
 
+@st.cache_resource
+def load_withoutbg(_device_name: str):
+    """Download and initialize withoutBG Focus model."""
+    return WithoutBG.opensource()
+
+
 birefnet_transform = transforms.Compose([
     transforms.Resize((1024, 1024)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+birefnet_hr_transform = transforms.Compose([
+    transforms.Resize((2048, 2048)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -286,8 +299,28 @@ def run_ben2_segmentation(model, image: Image.Image):
     return Image.fromarray(overlay), alpha_matte, elapsed
 
 
+def run_withoutbg_segmentation(model, image: Image.Image):
+    """Run withoutBG Focus segmentation. Returns (overlay, alpha_matte, elapsed) or (None, None, elapsed)."""
+    original = np.array(image)
+
+    start = time.perf_counter()
+    result = model.remove_background(image)
+    elapsed = time.perf_counter() - start
+
+    alpha_matte = np.array(result.split()[3]).astype(np.float32) / 255.0
+
+    if alpha_matte.max() < 0.1:
+        return None, None, elapsed
+
+    binary_mask = (alpha_matte > 0.5).astype(np.uint8)
+    overlay = render_segmentation_overlay(original, binary_mask)
+
+    return Image.fromarray(overlay), alpha_matte, elapsed
+
+
 TRANSFORM_MAP = {
     "birefnet": birefnet_transform,
+    "birefnet_hr": birefnet_hr_transform,
     "birefnet_dynamic": birefnet_dynamic_transform,
 }
 
@@ -302,6 +335,8 @@ def run_inference(spec, model, image, device):
         return run_sam3_segmentation(model, image)
     if runner == "ben2":
         return run_ben2_segmentation(model, image)
+    if runner == "withoutbg":
+        return run_withoutbg_segmentation(model, image)
     raise ValueError(f"Unknown runner: {runner}")
 
 
@@ -341,12 +376,21 @@ MODEL_REGISTRY = [
         "soft_mask": True,
     },
     {
+        "key": "birefnet_matting",
+        "label": "BiRefNet Matting",
+        "loader": load_birefnet,
+        "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet-matting", "use_float": True},
+        "runner": "birefnet",
+        "transform": "birefnet",
+        "soft_mask": True,
+    },
+    {
         "key": "birefnet_hr_matting",
         "label": "BiRefNet HR Matting",
         "loader": load_birefnet,
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_HR-matting", "use_float": True},
         "runner": "birefnet",
-        "transform": "birefnet",
+        "transform": "birefnet_hr",
         "soft_mask": True,
     },
     {
@@ -368,20 +412,20 @@ MODEL_REGISTRY = [
         "soft_mask": True,
     },
     {
-        "key": "rmbg2",
-        "label": "RMBG 2.0",
-        "loader": load_rmbg2,
-        "loader_kwargs": {},
-        "runner": "birefnet",
-        "transform": "birefnet",
-        "soft_mask": True,
-    },
-    {
         "key": "ben2",
         "label": "BEN2",
         "loader": load_ben2,
         "loader_kwargs": {},
         "runner": "ben2",
+        "transform": None,
+        "soft_mask": True,
+    },
+    {
+        "key": "withoutbg",
+        "label": "withoutBG Focus",
+        "loader": load_withoutbg,
+        "loader_kwargs": {},
+        "runner": "withoutbg",
         "transform": None,
         "soft_mask": True,
     },
