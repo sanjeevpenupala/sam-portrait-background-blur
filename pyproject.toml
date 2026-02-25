@@ -1,7 +1,7 @@
 [project]
 name = "portrait-blur-arena"
 version = "0.1.0"
-description = "Portrait background blur comparing BiRefNet and SAM3 segmentation models"
+description = "Background removal arena comparing segmentation models for transparent-background output"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

@@ -3,7 +3,6 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -13,7 +12,7 @@ from ben2 import BEN_Base
 from huggingface_hub import hf_hub_download
 from PIL import Image
 from torchvision import transforms
-from transformers import AutoConfig, AutoModelForImageSegmentation
+from transformers import AutoModelForImageSegmentation
 from ultralytics.models.sam import SAM3SemanticPredictor
 from withoutbg import WithoutBG
 
@@ -72,47 +71,33 @@ def render_segmentation_overlay(original: np.ndarray, merged: np.ndarray) -> np.
     return overlay
 
 
-def blur_background(
-    original: np.ndarray, merged: np.ndarray, blur_strength: int = 51, soft_mask: bool = False
-) -> np.ndarray:
-    """Blur the background using inpaint-then-blur to avoid halo artifacts.
-
-    1. Inpaint the subject region so the background is continuous
-    2. Blur the inpainted image (no subject pixels to smear)
-    3. Composite the sharp subject on top using the feathered mask
-    """
+def remove_background(original: np.ndarray, alpha: np.ndarray) -> Image.Image:
+    """Apply alpha matte to create RGBA image with transparent background."""
     h, w = original.shape[:2]
 
-    if merged.shape != (h, w):
-        merged = cv2.resize(merged, (w, h), interpolation=cv2.INTER_LINEAR)
+    if alpha.shape != (h, w):
+        alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
 
-    # Convert to float alpha mask [0, 1]
-    alpha = merged.astype(np.float32)
-    if alpha.max() > 1:
-        alpha = alpha / 255.0
+    alpha_f = alpha.astype(np.float32)
+    if alpha_f.max() > 1:
+        alpha_f = alpha_f / 255.0
 
-    # Feather the edges with Gaussian blur on the mask itself (skip for soft alpha mattes)
-    if not soft_mask:
-        alpha = cv2.GaussianBlur(alpha, (15, 15), sigmaX=5)
+    alpha_uint8 = (np.clip(alpha_f, 0, 1) * 255).astype(np.uint8)
+    rgba = np.dstack([original, alpha_uint8])
+    return Image.fromarray(rgba, mode="RGBA")
 
-    # Create binary inpaint mask: dilate to cover edge fringe
-    inpaint_mask = (alpha > 0.1).astype(np.uint8) * 255
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    inpaint_mask = cv2.dilate(inpaint_mask, dilate_kernel, iterations=1)
 
-    # Inpaint the subject region with surrounding background colors
-    inpainted = cv2.inpaint(original, inpaint_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-
-    # Blur the inpainted image (subject is gone, so no color bleeding)
-    blurred = inpainted
-    for _ in range(3):
-        blurred = cv2.GaussianBlur(blurred, (blur_strength, blur_strength), sigmaX=0)
-
-    # Composite: sharp subject on top of clean blurred background
-    alpha_3ch = alpha[:, :, np.newaxis]
-    result = (original * alpha_3ch + blurred * (1 - alpha_3ch)).astype(np.uint8)
-
-    return result
+def render_on_checkerboard(rgba_image: Image.Image, square_size: int = 16) -> Image.Image:
+    """Composite RGBA image onto a checkerboard pattern for display."""
+    w, h = rgba_image.size
+    checker = Image.new("RGB", (w, h))
+    pixels = checker.load()
+    light, dark = (220, 220, 220), (180, 180, 180)
+    for y in range(h):
+        for x in range(w):
+            pixels[x, y] = light if (x // square_size + y // square_size) % 2 == 0 else dark
+    checker.paste(rgba_image, mask=rgba_image.split()[3])
+    return checker
 
 
 @st.cache_resource
@@ -125,40 +110,6 @@ def load_birefnet(device_name: str, repo_id: str = "ZhengPeng7/BiRefNet-portrait
     if use_float:
         model.float()
     model.to(dev).eval()
-    return model
-
-
-@st.cache_resource
-def load_rmbg2(device_name: str):
-    """Download and initialize Bria RMBG 2.0 model.
-
-    Monkey-patches torch.linspace and adds missing post_init to work around
-    RMBG 2.0's incompatibility with transformers 5.x meta device initialization.
-    See: https://github.com/ZhengPeng7/BiRefNet/issues/285
-    """
-    _orig_linspace = torch.linspace
-
-    def _cpu_linspace(*args, **kwargs):
-        kwargs.pop("device", None)
-        return _orig_linspace(*args, **kwargs, device="cpu")
-
-    with patch("torch.linspace", _cpu_linspace):
-        config = AutoConfig.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True)
-        model_class = type(
-            AutoModelForImageSegmentation.from_config(config, trust_remote_code=True)
-        )
-
-        orig_init = model_class.__init__
-
-        def _patched_init(self, *args, **kwargs):
-            orig_init(self, *args, **kwargs)
-            if not hasattr(self, "all_tied_weights_keys"):
-                self.post_init()
-
-        model_class.__init__ = _patched_init
-        model = model_class.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True)
-
-    model.to(torch.device(device_name)).eval()
     return model
 
 
@@ -364,7 +315,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {},
         "runner": "sam3",
         "transform": None,
-        "soft_mask": False,
     },
     {
         "key": "birefnet_portrait",
@@ -373,7 +323,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet-portrait"},
         "runner": "birefnet",
         "transform": "birefnet",
-        "soft_mask": True,
     },
     {
         "key": "birefnet_matting",
@@ -382,7 +331,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet-matting", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet",
-        "soft_mask": True,
     },
     {
         "key": "birefnet_hr_matting",
@@ -391,7 +339,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_HR-matting", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet_hr",
-        "soft_mask": True,
     },
     {
         "key": "birefnet_dynamic",
@@ -400,7 +347,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_dynamic", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet_dynamic",
-        "soft_mask": True,
     },
     {
         "key": "birefnet_dynamic_matting",
@@ -409,7 +355,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {"repo_id": "ZhengPeng7/BiRefNet_dynamic-matting", "use_float": True},
         "runner": "birefnet",
         "transform": "birefnet_dynamic",
-        "soft_mask": True,
     },
     {
         "key": "ben2",
@@ -418,7 +363,6 @@ MODEL_REGISTRY = [
         "loader_kwargs": {},
         "runner": "ben2",
         "transform": None,
-        "soft_mask": True,
     },
     {
         "key": "withoutbg",
@@ -427,13 +371,12 @@ MODEL_REGISTRY = [
         "loader_kwargs": {},
         "runner": "withoutbg",
         "transform": None,
-        "soft_mask": True,
     },
 ]
 
 
-st.set_page_config(page_title="Portrait Background Blur", layout="wide")
-st.title("Portrait Background Blur — Model Comparison")
+st.set_page_config(page_title="Background Removal Arena", layout="wide")
+st.title("Background Removal Arena — Model Comparison")
 
 available_devices = get_available_devices()
 device_choice = st.sidebar.selectbox("Compute Device", available_devices)
@@ -470,7 +413,6 @@ if upload_key != st.session_state.get("_upload_key"):
     st.session_state.pop("results", None)
     st.session_state.pop("ran", None)
     st.session_state.pop("_zip_data", None)
-    st.session_state.pop("_zip_blur", None)
     st.session_state["_upload_key"] = upload_key
 
 # Thumbnail preview
@@ -479,7 +421,7 @@ for i, (name, img_data) in enumerate(images.items()):
     with thumb_cols[i % 6]:
         st.image(img_data["pil"], caption=name, width=150)
 
-if not st.button("Run Segmentation and Blurring", type="primary"):
+if not st.button("Run Segmentation and Removal", type="primary"):
     if st.session_state.get("ran"):
         pass  # fall through to render stored results
     else:
@@ -537,7 +479,6 @@ else:
     st.session_state["active_specs"] = active_specs
     st.session_state["ran"] = True
     st.session_state.pop("_zip_data", None)
-    st.session_state.pop("_zip_blur", None)
 
 # --- Render results from session state ---
 if not st.session_state.get("ran"):
@@ -549,13 +490,8 @@ stored_specs = st.session_state["active_specs"]
 
 st.divider()
 
-blur_strength = st.slider(
-    "Blur Strength", min_value=5, max_value=255, value=101, step=2
-)
 
-
-# ZIP download button (placed right after run button, before tabs)
-def build_zip(blur_val):
+def build_zip():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for img_name, model_results in results.items():
@@ -563,7 +499,6 @@ def build_zip(blur_val):
             for spec in stored_specs:
                 r = model_results.get(spec["key"], {})
                 if r.get("overlay") is not None:
-                    # Save mask overlay
                     overlay_buf = io.BytesIO()
                     r["overlay"].save(overlay_buf, format="PNG")
                     zf.writestr(
@@ -571,15 +506,12 @@ def build_zip(blur_val):
                         overlay_buf.getvalue(),
                     )
                 if r.get("mask") is not None:
-                    # Save blurred image
-                    blurred = blur_background(
-                        original, r["mask"], blur_val, soft_mask=spec["soft_mask"]
-                    )
-                    blurred_buf = io.BytesIO()
-                    Image.fromarray(blurred).save(blurred_buf, format="PNG")
+                    rgba = remove_background(original, r["mask"])
+                    rgba_buf = io.BytesIO()
+                    rgba.save(rgba_buf, format="PNG")
                     zf.writestr(
-                        f"results/{img_name}/blurred/{spec['key']}.png",
-                        blurred_buf.getvalue(),
+                        f"results/{img_name}/removed/{spec['key']}.png",
+                        rgba_buf.getvalue(),
                     )
     buf.seek(0)
     return buf.getvalue()
@@ -599,19 +531,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Cache ZIP — invalidate when blur changes or new results are generated
-_zip_stale = (
-    st.session_state.get("_zip_blur") != blur_strength
-    or "_zip_data" not in st.session_state
-)
-if _zip_stale:
-    st.session_state["_zip_data"] = build_zip(blur_strength)
-    st.session_state["_zip_blur"] = blur_strength
+if "_zip_data" not in st.session_state:
+    st.session_state["_zip_data"] = build_zip()
 
 st.download_button(
     label="Download All Results (ZIP)",
     data=st.session_state["_zip_data"],
-    file_name="portrait_blur_results.zip",
+    file_name="background_removal_results.zip",
     mime="application/zip",
     key="download_zip",
 )
@@ -639,18 +565,17 @@ if len(image_names) == 1:
     )
     if any_mask:
         st.divider()
-        blur_cols = st.columns(len(stored_specs))
-        for col, spec in zip(blur_cols, stored_specs):
+        removal_cols = st.columns(len(stored_specs))
+        for col, spec in zip(removal_cols, stored_specs):
             r = model_results.get(spec["key"], {})
             with col:
                 if r.get("mask") is not None:
-                    blurred = blur_background(
-                        original, r["mask"], blur_strength, soft_mask=spec["soft_mask"]
-                    )
+                    rgba = remove_background(original, r["mask"])
+                    display = render_on_checkerboard(rgba)
                     st.image(
-                        blurred,
-                        caption=f"{spec['label']} — Background Blur",
-                        width="stretch",
+                        display,
+                        caption=f"{spec['label']} — Background Removed",
+                        use_container_width=True,
                     )
 else:
     # Multiple images — tabbed layout
@@ -681,19 +606,15 @@ else:
             )
             if any_mask:
                 st.divider()
-                blur_cols = st.columns(len(stored_specs))
-                for col, spec in zip(blur_cols, stored_specs):
+                removal_cols = st.columns(len(stored_specs))
+                for col, spec in zip(removal_cols, stored_specs):
                     r = model_results.get(spec["key"], {})
                     with col:
                         if r.get("mask") is not None:
-                            blurred = blur_background(
-                                original,
-                                r["mask"],
-                                blur_strength,
-                                soft_mask=spec["soft_mask"],
-                            )
+                            rgba = remove_background(original, r["mask"])
+                            display = render_on_checkerboard(rgba)
                             st.image(
-                                blurred,
-                                caption=f"{spec['label']} — Background Blur",
-                                width="stretch",
+                                display,
+                                caption=f"{spec['label']} — Background Removed",
+                                use_container_width=True,
                             )
