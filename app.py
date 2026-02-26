@@ -1,3 +1,4 @@
+import gc
 import io
 import tempfile
 import time
@@ -10,7 +11,7 @@ import streamlit as st
 import torch
 from ben2 import BEN_Base
 from huggingface_hub import hf_hub_download
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation
 from ultralytics.models.sam import SAM3SemanticPredictor
@@ -104,17 +105,16 @@ def remove_background(original: np.ndarray, alpha: np.ndarray) -> Image.Image:
 def render_on_checkerboard(rgba_image: Image.Image, square_size: int = 16) -> Image.Image:
     """Composite RGBA image onto a checkerboard pattern for display."""
     w, h = rgba_image.size
-    checker = Image.new("RGB", (w, h))
-    pixels = checker.load()
-    light, dark = (220, 220, 220), (180, 180, 180)
-    for y in range(h):
-        for x in range(w):
-            pixels[x, y] = light if (x // square_size + y // square_size) % 2 == 0 else dark
-    checker.paste(rgba_image, mask=rgba_image.split()[3])
-    return checker
+    rows = np.arange(h) // square_size
+    cols = np.arange(w) // square_size
+    is_light = (rows[:, None] + cols[None, :]) % 2 == 0
+    checker = np.where(is_light[:, :, None], 220, 180).astype(np.uint8)
+    checker = np.broadcast_to(checker, (h, w, 3)).copy()
+    checker_img = Image.fromarray(checker, "RGB")
+    checker_img.paste(rgba_image, mask=rgba_image.split()[3])
+    return checker_img
 
 
-@st.cache_resource
 def load_birefnet(device_name: str, repo_id: str = "ZhengPeng7/BiRefNet-portrait", use_float: bool = False):
     """Download and initialize a BiRefNet-family model."""
     dev = torch.device(device_name)
@@ -127,7 +127,6 @@ def load_birefnet(device_name: str, repo_id: str = "ZhengPeng7/BiRefNet-portrait
     return model
 
 
-@st.cache_resource
 def load_sam3(device_name: str):
     """Download SAM3 weights and initialize the predictor."""
     model_path = hf_hub_download(repo_id="1038lab/sam3", filename="sam3.pt")
@@ -141,7 +140,6 @@ def load_sam3(device_name: str):
     return SAM3SemanticPredictor(overrides=overrides)
 
 
-@st.cache_resource
 def load_ben2(device_name: str):
     """Download and initialize BEN2 model."""
     dev = torch.device(device_name)
@@ -150,10 +148,32 @@ def load_ben2(device_name: str):
     return model
 
 
-@st.cache_resource
 def load_withoutbg(_device_name: str):
     """Download and initialize withoutBG Focus model."""
     return WithoutBG.opensource()
+
+
+def _evict_unused_models(active_keys: set, device: torch.device):
+    """Remove models not in active_keys from cache, free GPU memory."""
+    cache = st.session_state.get("_model_cache", {})
+    evicted = [k for k in list(cache) if k not in active_keys]
+    for key in evicted:
+        del cache[key]
+    if evicted:
+        gc.collect()
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
+
+
+def _get_or_load_model(spec, device_name: str):
+    """Load model from cache or create new one."""
+    cache = st.session_state.setdefault("_model_cache", {})
+    key = spec["key"]
+    if key not in cache:
+        cache[key] = spec["loader"](device_name, **spec["loader_kwargs"])
+    return cache[key]
 
 
 birefnet_transform = transforms.Compose([
@@ -206,6 +226,7 @@ def run_birefnet_segmentation(model, image: Image.Image, device: torch.device, t
 
     # Squeeze to 2D and resize back to original dimensions
     alpha_matte = preds.squeeze().cpu().numpy()
+    del input_tensor, preds
     alpha_matte = cv2.resize(alpha_matte, (w, h), interpolation=cv2.INTER_LINEAR)
 
     # Check if any person detected (meaningful alpha values)
@@ -232,6 +253,8 @@ def run_sam3_segmentation(predictor, image: Image.Image):
     predictor.set_image(temp_path)
     results = predictor(text=["person"])
     elapsed = time.perf_counter() - start
+
+    Path(temp_path).unlink(missing_ok=True)
 
     if results and results[0].masks is not None:
         masks = results[0].masks.data.cpu().numpy()
@@ -281,6 +304,13 @@ def run_withoutbg_segmentation(model, image: Image.Image):
     overlay = render_segmentation_overlay(original, binary_mask)
 
     return Image.fromarray(overlay), alpha_matte, elapsed
+
+
+def _mask_to_binary(mask: np.ndarray) -> np.ndarray:
+    """Convert stored uint8 mask to binary. Handles both SAM3 (0/1) and alpha (0-255)."""
+    if mask.max() > 1:
+        return (mask > 127).astype(np.uint8)
+    return (mask > 0).astype(np.uint8)
 
 
 TRANSFORM_MAP = {
@@ -425,7 +455,8 @@ if not uploaded_files:
 named_files = deduplicate_names(uploaded_files)
 images = {}
 for name, f in named_files.items():
-    pil = Image.open(f).convert("RGB")
+    pil = Image.open(f)
+    pil = ImageOps.exif_transpose(pil).convert("RGB")
     images[name] = {"pil": pil, "np": np.array(pil)}
 
 # Detect upload change and clear stale results
@@ -448,9 +479,15 @@ if not st.button("Run Segmentation and Removal", type="primary"):
     else:
         st.stop()
 else:
-    # "Run" button was clicked — do batch processing
+    # "Run" button was clicked — clear previous results and do batch processing
+    st.session_state.pop("results", None)
+    st.session_state.pop("_zip_data", None)
+
+    # Evict models no longer selected to free GPU memory
+    active_keys = {s["key"] for s in active_specs}
+    _evict_unused_models(active_keys, device)
+
     results = {}
-    models = {}
     total_steps = len(active_specs) * len(images)
     step = 0
     progress = st.progress(0, text="Starting...")
@@ -461,12 +498,12 @@ else:
                 step / total_steps,
                 text=f"Loading {spec['label']}..."
             )
-            models[spec["key"]] = spec["loader"](device_name, **spec["loader_kwargs"])
+            model = _get_or_load_model(spec, device_name)
         except Exception as e:
             st.error(f"Failed to load {spec['label']}: {e}")
             for name in images:
                 results.setdefault(name, {})[spec["key"]] = {
-                    "overlay": None, "mask": None, "time": 0.0
+                    "mask": None, "time": 0.0
                 }
             step += len(images)
             continue
@@ -478,20 +515,26 @@ else:
                 text=f"Running {spec['label']} on {name}... ({step}/{total_steps})"
             )
             try:
-                overlay, mask, elapsed = run_inference(
-                    spec, models[spec["key"]], img_data["pil"], device
+                _overlay, mask, elapsed = run_inference(
+                    spec, model, img_data["pil"], device
                 )
-                # Store mask as uint8 to halve memory
+                # Store mask as uint8 to halve memory (discard overlay, regenerate on render)
                 if mask is not None and mask.dtype != np.uint8:
                     mask = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
                 results.setdefault(name, {})[spec["key"]] = {
-                    "overlay": overlay, "mask": mask, "time": elapsed
+                    "mask": mask, "time": elapsed
                 }
             except Exception as e:
                 st.error(f"Failed to run {spec['label']} on {name}: {e}")
                 results.setdefault(name, {})[spec["key"]] = {
-                    "overlay": None, "mask": None, "time": 0.0
+                    "mask": None, "time": 0.0
                 }
+
+        # Free intermediate GPU memory between models
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
 
     progress.progress(1.0, text="Rendering results...")
 
@@ -519,14 +562,17 @@ def build_zip():
             original = stored_images[img_name]["np"]
             for spec in stored_specs:
                 r = model_results.get(spec["key"], {})
-                if r.get("overlay") is not None:
+                if r.get("mask") is not None:
+                    # Regenerate overlay for ZIP
+                    binary = _mask_to_binary(r["mask"])
+                    overlay = render_segmentation_overlay(original, binary)
                     overlay_buf = io.BytesIO()
-                    r["overlay"].save(overlay_buf, format="PNG")
+                    Image.fromarray(overlay).save(overlay_buf, format="PNG")
                     zf.writestr(
                         f"results/{img_name}/masks/{spec['key']}.png",
                         overlay_buf.getvalue(),
                     )
-                if r.get("mask") is not None:
+                    # RGBA transparent PNG
                     rgba = remove_background(original, r["mask"])
                     rgba_buf = io.BytesIO()
                     rgba.save(rgba_buf, format="PNG")
@@ -576,12 +622,12 @@ if len(image_names) == 1:
         with col:
             st.subheader(spec["label"])
             st.caption(f"Inference: {r.get('time', 0):.2f}s")
-            if r.get("overlay") is not None:
-                if mask_display_mode == "Outline only" and r.get("mask") is not None:
-                    outline_img = render_segmentation_outline_only(original, r["mask"])
-                    st.image(Image.fromarray(outline_img), caption="Mask Overlay", width="stretch")
+            if r.get("mask") is not None:
+                if mask_display_mode == "Outline only":
+                    vis = render_segmentation_outline_only(original, r["mask"])
                 else:
-                    st.image(r["overlay"], caption="Mask Overlay", width="stretch")
+                    vis = render_segmentation_overlay(original, _mask_to_binary(r["mask"]))
+                st.image(Image.fromarray(vis), caption="Mask Overlay", width="stretch")
             else:
                 st.warning("No humans detected.")
 
@@ -616,20 +662,16 @@ else:
                 with col:
                     st.subheader(spec["label"])
                     st.caption(f"Inference: {r.get('time', 0):.2f}s")
-                    if r.get("overlay") is not None:
-                        if mask_display_mode == "Outline only" and r.get("mask") is not None:
-                            outline_img = render_segmentation_outline_only(original, r["mask"])
-                            st.image(
-                                Image.fromarray(outline_img),
-                                caption="Mask Overlay",
-                                width="stretch",
-                            )
+                    if r.get("mask") is not None:
+                        if mask_display_mode == "Outline only":
+                            vis = render_segmentation_outline_only(original, r["mask"])
                         else:
-                            st.image(
-                                r["overlay"],
-                                caption="Mask Overlay",
-                                width="stretch",
-                            )
+                            vis = render_segmentation_overlay(original, _mask_to_binary(r["mask"]))
+                        st.image(
+                            Image.fromarray(vis),
+                            caption="Mask Overlay",
+                            width="stretch",
+                        )
                     else:
                         st.warning("No humans detected.")
 
